@@ -9,9 +9,22 @@ from data.parsing import split_prompt_response
 
 
 def load_hh_rlhf_raw(config: DataConfig) -> DatasetDict:
-    if config.hh_dataset_config:
-        return load_dataset(config.hh_dataset_name, config.hh_dataset_config)
-    return load_dataset(config.hh_dataset_name)
+    requested_config = config.hh_dataset_config
+    try:
+        if requested_config:
+            return load_dataset(config.hh_dataset_name, requested_config)
+        return load_dataset(config.hh_dataset_name)
+    except ValueError as error:
+        message = str(error)
+        alias_requested = requested_config in {"harmless-base", "helpful-base"}
+        default_only = "Available: ['default']" in message
+        if requested_config and (alias_requested or default_only):
+            print(
+                f"[hh_rlhf] Config '{requested_config}' is not available in this datasets version. "
+                "Falling back to the available 'default' config."
+            )
+            return load_dataset(config.hh_dataset_name, "default")
+        raise
 
 
 def parse_hh_example(row: dict) -> Optional[dict]:

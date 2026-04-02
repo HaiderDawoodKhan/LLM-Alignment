@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 @dataclass
 class DataConfig:
     hh_dataset_name: str = "Anthropic/hh-rlhf"
-    hh_dataset_config: Optional[str] = "harmless-base"
+    hh_dataset_config: Optional[str] = "default"
     gsm8k_dataset_name: str = "openai/gsm8k"
     gsm8k_dataset_config: str = "main"
     max_seq_len: int = 1024
@@ -76,11 +76,13 @@ class PPOConfig:
     num_updates: int = 200
     prompts_per_step: int = 8
     minibatch_epochs: int = 4
+    minibatch_size: int = 4
     optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(lr=1e-5))
     value_optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(lr=5e-5))
     gamma: float = 1.0
     gae_lambda: float = 0.95
     beta_kl: float = 0.1
+    kl_loss_coef: float = 0.1
     clip_epsilon: float = 0.2
     entropy_coef: float = 0.0
     value_coef: float = 1.0
@@ -92,11 +94,12 @@ class PPOConfig:
 @dataclass
 class DPOConfig:
     epochs: int = 1
-    batch_size: int = 8
+    batch_size: int = 2
     grad_accum_steps: int = 4
     optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(lr=1e-5))
     beta: float = 0.1
-    eval_every: int = 25
+    log_every: int = 10
+    eval_every: int = 2500
 
 
 @dataclass
@@ -105,6 +108,8 @@ class GRPOConfig:
     prompts_per_step: int = 8
     group_size: int = 4
     minibatch_epochs: int = 4
+    minibatch_size: int = 8
+    update_chunk_size: int = 8
     optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(lr=1e-5))
     beta_kl: float = 0.1
     clip_epsilon: float = 0.2
@@ -119,6 +124,8 @@ class RLVRConfig:
     prompts_per_step: int = 8
     group_size: int = 4
     minibatch_epochs: int = 4
+    minibatch_size: int = 4
+    update_chunk_size: int = 4
     optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(lr=5e-6))
     beta_kl: float = 0.05
     clip_epsilon: float = 0.2

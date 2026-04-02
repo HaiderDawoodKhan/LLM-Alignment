@@ -29,7 +29,7 @@ def build_reward_model(
         model = AutoModelForSequenceClassification.from_pretrained(
             config.rm_name,
             num_labels=1,
-            torch_dtype=dtype,
+            dtype=dtype,
             trust_remote_code=config.trust_remote_code,
         )
     except Exception as error:  # pragma: no cover - requires network/HF auth
@@ -53,8 +53,15 @@ def score_sequences(model: nn.Module, input_ids: torch.Tensor, attention_mask: t
     base_model = getattr(model, "model", None)
     score_head = getattr(model, "score", None)
     if base_model is not None and score_head is not None:
-        outputs = base_model(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
-        hidden_states = outputs.last_hidden_state
+        outputs = base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            return_dict=True,
+            output_hidden_states=True,
+        )
+        hidden_states = getattr(outputs, "last_hidden_state", None)
+        if hidden_states is None:
+            hidden_states = outputs.hidden_states[-1]
         last_indices = _find_last_indices(attention_mask)
         batch_indices = torch.arange(hidden_states.size(0), device=hidden_states.device)
         pooled = hidden_states[batch_indices, last_indices]

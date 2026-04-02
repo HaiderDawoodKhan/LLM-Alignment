@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import copy
+import json
 from pathlib import Path
 
 import torch
 
 from alignment.losses import bradley_terry_loss
 from config import default_config
+from model.utils import freeze_model
 from model.reward_model import build_reward_model, build_reward_tokenizer, score_sequences
 from model.utils import count_parameters, gpu_memory_snapshot, save_artifact
 from runtime import RunLogger, StepTimer
@@ -13,9 +16,27 @@ from seed import set_seed
 from train_helpers import build_hh_datasets, build_optimizer, build_rm_dataloader, default_device, preview_examples
 
 
-def evaluate_reward_model(model, dataloader, device: torch.device, lambda_reg: float) -> dict[str, float]:
+def _reward_histogram(values: torch.Tensor, bins: int = 10) -> dict[str, list[float] | float]:
+    values = values.detach().float().cpu()
+    if values.numel() == 0:
+        return {"bin_edges": [], "counts": []}
+    min_value = float(values.min().item())
+    max_value = float(values.max().item())
+    if min_value == max_value:
+        max_value = min_value + 1e-6
+    counts = torch.histc(values, bins=bins, min=min_value, max=max_value)
+    edges = torch.linspace(min_value, max_value, bins + 1)
+    return {
+        "bin_edges": [float(edge.item()) for edge in edges],
+        "counts": [float(count.item()) for count in counts],
+    }
+
+
+def evaluate_reward_model(model, dataloader, device: torch.device, lambda_reg: float) -> dict[str, object]:
     model.eval()
     totals = {"loss": 0.0, "preference_accuracy": 0.0, "reward_gap_mean": 0.0, "steps": 0.0}
+    chosen_reward_values = []
+    rejected_reward_values = []
     with torch.no_grad():
         for batch in dataloader:
             chosen_input_ids = batch["chosen_input_ids"].to(device)
@@ -29,8 +50,20 @@ def evaluate_reward_model(model, dataloader, device: torch.device, lambda_reg: f
             totals["preference_accuracy"] += float(metrics["preference_accuracy"].item())
             totals["reward_gap_mean"] += float(metrics["reward_gap_mean"].item())
             totals["steps"] += 1.0
+            chosen_reward_values.append(chosen_rewards.detach().cpu())
+            rejected_reward_values.append(rejected_rewards.detach().cpu())
     steps = max(totals["steps"], 1.0)
-    return {key: value / steps for key, value in totals.items() if key != "steps"}
+    chosen_rewards = torch.cat(chosen_reward_values) if chosen_reward_values else torch.empty(0)
+    rejected_rewards = torch.cat(rejected_reward_values) if rejected_reward_values else torch.empty(0)
+    return {
+        **{key: value / steps for key, value in totals.items() if key != "steps"},
+        "chosen_reward_mean": float(chosen_rewards.mean().item()) if chosen_rewards.numel() else 0.0,
+        "chosen_reward_std": float(chosen_rewards.std().item()) if chosen_rewards.numel() > 1 else 0.0,
+        "rejected_reward_mean": float(rejected_rewards.mean().item()) if rejected_rewards.numel() else 0.0,
+        "rejected_reward_std": float(rejected_rewards.std().item()) if rejected_rewards.numel() > 1 else 0.0,
+        "chosen_reward_histogram": _reward_histogram(chosen_rewards),
+        "rejected_reward_histogram": _reward_histogram(rejected_rewards),
+    }
 
 
 def main() -> None:
@@ -86,14 +119,40 @@ def main() -> None:
             )
 
         eval_metrics = evaluate_reward_model(model, eval_loader, device, config.rm.lambda_reg)
-        logger.log_metrics(global_step, {f"eval_{key}": value for key, value in eval_metrics.items()})
+        scalar_eval_metrics = {f"eval_{key}": value for key, value in eval_metrics.items() if isinstance(value, (int, float))}
+        logger.log_metrics(global_step, scalar_eval_metrics)
+        logger.write_json(
+            "reward_model_eval_summary.json",
+            {
+                "global_step": global_step,
+                **eval_metrics,
+                "target_preference_accuracy": 0.60,
+                "meets_target": bool(eval_metrics["preference_accuracy"] >= 0.60),
+            },
+        )
+        print(
+            f"[rm eval] step={global_step} "
+            f"loss={eval_metrics['loss']:.4f} "
+            f"pref_acc={eval_metrics['preference_accuracy']:.4f} "
+            f"reward_gap={eval_metrics['reward_gap_mean']:.4f}"
+        )
+        if eval_metrics["preference_accuracy"] >= 0.60:
+            print("[rm eval] Target met: preference accuracy is at least 60%.")
+        else:
+            print("[rm eval] Target not met yet: preference accuracy is below 60%.")
         if eval_metrics["preference_accuracy"] > best_accuracy:
             best_accuracy = eval_metrics["preference_accuracy"]
+            frozen_model = freeze_model(copy.deepcopy(model))
             save_artifact(
-                model,
+                frozen_model,
                 tokenizer,
                 config.checkpoint_dir("reward_model"),
-                extra_metadata={"base_model_name": config.model.rm_name, "task": "reward_model"},
+                extra_metadata={
+                    "base_model_name": config.model.rm_name,
+                    "task": "reward_model",
+                    "frozen_after_training": True,
+                    "eval_preference_accuracy": eval_metrics["preference_accuracy"],
+                },
             )
     logger.close()
 

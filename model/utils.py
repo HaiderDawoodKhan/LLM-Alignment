@@ -47,6 +47,24 @@ def gpu_memory_snapshot() -> Dict[str, float]:
     }
 
 
+def torch_cuda_memory_allocated_gb() -> float:
+    if not torch.cuda.is_available():
+        return 0.0
+    return round(torch.cuda.memory_allocated() / 1024**3, 4)
+
+
+def report_model_footprint(name: str, model: torch.nn.Module) -> Dict[str, float | int | str]:
+    params = count_parameters(model)
+    backbone_dtype = next(model.parameters()).dtype if any(True for _ in model.parameters()) else "unknown"
+    return {
+        "model_name": name,
+        "total_params": params["total"],
+        "trainable_params": params["trainable"],
+        "cuda_memory_allocated_gb": torch_cuda_memory_allocated_gb(),
+        "dtype": str(backbone_dtype),
+    }
+
+
 def ensure_tokenizer_padding(tokenizer: AutoTokenizer, padding_side: str) -> AutoTokenizer:
     tokenizer.padding_side = padding_side
     if tokenizer.pad_token is None:

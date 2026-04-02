@@ -47,6 +47,10 @@ def clone_reference_model(model: torch.nn.Module) -> torch.nn.Module:
     return freeze_model(cloned)
 
 
+def create_frozen_copy_without_lora(model: torch.nn.Module) -> torch.nn.Module:
+    return clone_reference_model(model)
+
+
 @contextmanager
 def disable_adapters_for_reference(model: torch.nn.Module):
     if hasattr(model, "disable_adapter"):

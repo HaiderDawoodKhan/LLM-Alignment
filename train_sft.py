@@ -4,6 +4,7 @@ import math
 
 import torch
 
+from alignment.rollout import generate_batch
 from config import default_config
 from model.policy import build_policy_model, build_policy_tokenizer
 from model.utils import count_parameters, gpu_memory_snapshot, save_artifact
@@ -26,6 +27,25 @@ def evaluate_sft(model, dataloader, device: torch.device) -> dict[str, float]:
             steps += 1
     avg_loss = total_loss / max(steps, 1)
     return {"loss": avg_loss, "perplexity": math.exp(min(avg_loss, 20))}
+
+
+def generate_sft_samples(model, tokenizer, prompts: list[str], config, device: torch.device) -> list[dict[str, object]]:
+    with torch.no_grad():
+        _, _, _, _, responses = generate_batch(
+            policy=model,
+            tokenizer=tokenizer,
+            prompts=prompts,
+            max_length=config.data.max_seq_len,
+            max_new_tokens=config.data.max_new_tokens,
+            temperature=0.0,
+            top_p=1.0,
+            do_sample=False,
+            device=device,
+        )
+    return [
+        {"prompt": prompt, "response": response}
+        for prompt, response in zip(prompts, responses)
+    ]
 
 
 def main() -> None:
@@ -93,13 +113,31 @@ def main() -> None:
         model,
         tokenizer,
         config.checkpoint_dir("policy_sft"),
-        extra_metadata={"base_model_name": config.model.policy_name, "task": "policy_sft"},
+        extra_metadata={"base_model_name": config.model.policy_name, "task": "policy_sft", "trainable_init": True},
+    )
+    sample_prompts = [datasets["sft_eval"][idx]["prompt"] for idx in range(min(5, len(datasets["sft_eval"])))]
+    samples = generate_sft_samples(model, tokenizer, sample_prompts, config, device)
+    print("[sft-samples]")
+    for idx, sample in enumerate(samples, start=1):
+        print(f"[sample-{idx}]")
+        print("PROMPT:")
+        print(sample["prompt"])
+        print("RESPONSE:")
+        print(sample["response"])
+    logger.write_json(
+        "sft_sample_generations.json",
+        {"samples": samples},
     )
     save_artifact(
         model,
         tokenizer,
         config.checkpoint_dir("policy_ref"),
-        extra_metadata={"base_model_name": config.model.policy_name, "task": "policy_ref"},
+        extra_metadata={
+            "base_model_name": config.model.policy_name,
+            "task": "policy_ref",
+            "frozen_reference": True,
+            "reference_mode": "disable_adapters",
+        },
     )
     logger.close()
 

@@ -5,6 +5,7 @@ from typing import Callable, List, Sequence
 
 import torch
 
+from model.lora import disable_adapters_for_reference
 
 @dataclass
 class RolloutBatch:
@@ -13,6 +14,7 @@ class RolloutBatch:
     prompt_attention_mask: torch.Tensor
     full_input_ids: torch.Tensor
     full_attention_mask: torch.Tensor
+    response_ids: torch.Tensor
     response_starts: torch.Tensor
     response_mask: torch.Tensor
     response_lengths: torch.Tensor
@@ -38,6 +40,24 @@ def build_response_mask(attention_mask: torch.Tensor, response_starts: torch.Ten
     positions = torch.arange(seq_len, device=attention_mask.device).unsqueeze(0).expand_as(attention_mask)
     mask = (positions >= response_starts.unsqueeze(1)) & attention_mask.bool()
     return mask[:, 1:] if shifted else mask
+
+
+def extract_padded_response_ids(
+    full_input_ids: torch.Tensor,
+    full_attention_mask: torch.Tensor,
+    response_starts: torch.Tensor,
+    pad_token_id: int,
+) -> torch.Tensor:
+    response_mask = build_response_mask(full_attention_mask, response_starts, shifted=False)
+    response_lengths = response_mask.sum(dim=1)
+    max_response_len = int(response_lengths.max().item()) if response_lengths.numel() > 0 else 0
+    padded = full_input_ids.new_full((full_input_ids.size(0), max_response_len), pad_token_id)
+    for idx in range(full_input_ids.size(0)):
+        start = int(response_starts[idx].item())
+        length = int(response_lengths[idx].item())
+        if length > 0:
+            padded[idx, :length] = full_input_ids[idx, start : start + length]
+    return padded
 
 
 def gather_shifted_logprobs(logits: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
@@ -144,21 +164,36 @@ def collect_rollout_batch(
     value_model: torch.nn.Module | None = None,
     group_ids: torch.Tensor | None = None,
 ) -> RolloutBatch:
-    prompt_input_ids, prompt_attention_mask, full_input_ids, full_attention_mask, responses = generate_batch(
-        policy=policy,
-        tokenizer=tokenizer,
-        prompts=prompts,
-        max_length=max_length,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        do_sample=do_sample,
-        device=device,
-    )
-    response_starts = prompt_attention_mask.sum(dim=1) + (prompt_input_ids.size(1) - prompt_attention_mask.sum(dim=1))
-    old_logprobs, response_mask = forward_response_logprobs(policy, full_input_ids, full_attention_mask, response_starts)
     with torch.no_grad():
-        ref_logprobs, _ = forward_response_logprobs(reference, full_input_ids, full_attention_mask, response_starts)
+        prompt_input_ids, prompt_attention_mask, full_input_ids, full_attention_mask, responses = generate_batch(
+            policy=policy,
+            tokenizer=tokenizer,
+            prompts=prompts,
+            max_length=max_length,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=do_sample,
+            device=device,
+        )
+    response_starts = prompt_attention_mask.sum(dim=1) + (prompt_input_ids.size(1) - prompt_attention_mask.sum(dim=1))
+    response_ids = extract_padded_response_ids(
+        full_input_ids,
+        full_attention_mask,
+        response_starts,
+        tokenizer.pad_token_id,
+    )
+    with torch.no_grad():
+        old_logprobs, response_mask = forward_response_logprobs(policy, full_input_ids, full_attention_mask, response_starts)
+    with torch.no_grad():
+        reference_device = next(reference.parameters()).device
+        with disable_adapters_for_reference(reference):
+            ref_logprobs, _ = forward_response_logprobs(
+                reference,
+                full_input_ids.to(reference_device),
+                full_attention_mask.to(reference_device),
+                response_starts.to(reference_device),
+            )
         rewards = reward_fn(prompts, responses).to(device)
         values = None
         if value_model is not None:
@@ -170,6 +205,7 @@ def collect_rollout_batch(
         prompt_attention_mask=prompt_attention_mask.cpu(),
         full_input_ids=full_input_ids.cpu(),
         full_attention_mask=full_attention_mask.cpu(),
+        response_ids=response_ids.cpu(),
         response_starts=response_starts.cpu(),
         response_mask=response_mask.cpu(),
         response_lengths=response_mask.sum(dim=1).cpu(),

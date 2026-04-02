@@ -23,6 +23,18 @@ huggingface-cli login
 
 ## Training
 
+Run the full assignment pipeline end to end:
+
+```bash
+bash run_all_tasks.sh
+```
+
+Optional skips:
+
+```bash
+bash run_all_tasks.sh --skip-c0 --skip-c7 --skip-c8
+```
+
 Reward model:
 
 ```bash

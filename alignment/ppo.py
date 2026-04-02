@@ -23,6 +23,36 @@ class PPOStepOutput:
     token_rewards: torch.Tensor
 
 
+def slice_rollout_batch(batch: RolloutBatch, indices: torch.Tensor) -> RolloutBatch:
+    rows = indices.tolist()
+    return RolloutBatch(
+        prompts=[batch.prompts[idx] for idx in rows],
+        prompt_input_ids=batch.prompt_input_ids.index_select(0, indices),
+        prompt_attention_mask=batch.prompt_attention_mask.index_select(0, indices),
+        full_input_ids=batch.full_input_ids.index_select(0, indices),
+        full_attention_mask=batch.full_attention_mask.index_select(0, indices),
+        response_ids=batch.response_ids.index_select(0, indices),
+        response_starts=batch.response_starts.index_select(0, indices),
+        response_mask=batch.response_mask.index_select(0, indices),
+        response_lengths=batch.response_lengths.index_select(0, indices),
+        responses=[batch.responses[idx] for idx in rows],
+        old_logprobs=batch.old_logprobs.index_select(0, indices),
+        ref_logprobs=batch.ref_logprobs.index_select(0, indices),
+        rewards=batch.rewards.index_select(0, indices),
+        rm_rewards=batch.rm_rewards.index_select(0, indices),
+        values=batch.values.index_select(0, indices) if batch.values is not None else None,
+        group_ids=batch.group_ids.index_select(0, indices) if batch.group_ids is not None else None,
+    )
+
+
+def slice_prepared_output(prepared: PPOStepOutput, indices: torch.Tensor) -> PPOStepOutput:
+    return PPOStepOutput(
+        advantages=prepared.advantages.index_select(0, indices),
+        targets=prepared.targets.index_select(0, indices),
+        token_rewards=prepared.token_rewards.index_select(0, indices),
+    )
+
+
 def build_terminal_rewards(
     old_logprobs: torch.Tensor,
     ref_logprobs: torch.Tensor,
@@ -118,6 +148,7 @@ def ppo_update_epoch(
     policy_optimizer: torch.optim.Optimizer,
     value_optimizer: torch.optim.Optimizer,
     clip_epsilon: float,
+    kl_loss_coef: float,
     value_coef: float,
     entropy_coef: float,
     device: torch.device,
@@ -143,7 +174,7 @@ def ppo_update_epoch(
     critic_loss = value_function_loss(value_pred, targets, response_mask)
     entropy = entropy_bonus_from_logprobs(new_logprobs, response_mask)
     kl_value = sampled_token_kl(new_logprobs, local.ref_logprobs, response_mask)
-    total_loss = policy_loss + value_coef * critic_loss - entropy_coef * entropy
+    total_loss = policy_loss + value_coef * critic_loss + kl_loss_coef * kl_value - entropy_coef * entropy
 
     policy_optimizer.zero_grad(set_to_none=True)
     value_optimizer.zero_grad(set_to_none=True)

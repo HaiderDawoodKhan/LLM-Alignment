@@ -1,25 +1,49 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
-
-from datasets import DatasetDict, load_dataset
+from typing import TYPE_CHECKING, Optional
 
 from config import DataConfig
+
+if TYPE_CHECKING:
+    from datasets import DatasetDict
 
 _NUMBER_PATTERN = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
 _BOXED_PATTERN = re.compile(r"\\boxed\{([^}]*)\}")
 
 
-def load_gsm8k(config: DataConfig) -> DatasetDict:
+def load_gsm8k(config: DataConfig) -> "DatasetDict":
+    from datasets import load_dataset
+
     return load_dataset(config.gsm8k_dataset_name, config.gsm8k_dataset_config)
 
 
-def format_gsm8k_prompt(question: str) -> str:
+def truncate_gsm8k_question(question: str, tokenizer=None, max_question_tokens: int = 200) -> str:
+    text = question.strip()
+    if tokenizer is None:
+        return text
+    encoded = tokenizer(
+        [text],
+        add_special_tokens=False,
+        truncation=True,
+        max_length=max_question_tokens,
+    )
+    input_ids = encoded["input_ids"]
+    if input_ids and isinstance(input_ids[0], list):
+        input_ids = input_ids[0]
+    return tokenizer.decode(input_ids, skip_special_tokens=True).strip()
+
+
+def format_gsm8k_prompt(question: str, tokenizer=None, max_question_tokens: int = 200) -> str:
+    truncated_question = truncate_gsm8k_question(
+        question,
+        tokenizer=tokenizer,
+        max_question_tokens=max_question_tokens,
+    )
     return (
         "Solve the following math problem step by step.\n"
         "At the end, write your final answer as a single number.\n"
-        f"Problem: {question.strip()}\n"
+        f"Problem: {truncated_question}\n"
         "Solution:"
     )
 
