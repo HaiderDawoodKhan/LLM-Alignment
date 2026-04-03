@@ -18,20 +18,34 @@ from model.utils import get_torch_device
 from train_helpers import default_device, load_policy_checkpoint, load_reward_checkpoint
 
 
-def build_reward_scorer(reward_model, reward_tokenizer, device: torch.device, max_length: int):
+def build_reward_scorer(
+    reward_model,
+    reward_tokenizer,
+    device: torch.device,
+    max_length: int,
+    batch_size: int = 8,
+):
     def score(prompts: Sequence[str], responses: Sequence[str]) -> torch.Tensor:
         pair_text = [prompt + response for prompt, response in zip(prompts, responses)]
-        tokenized = reward_tokenizer(
-            list(pair_text),
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors="pt",
-            add_special_tokens=False,
-        )
-        tokenized = {key: value.to(device) for key, value in tokenized.items()}
+        outputs = []
         with torch.no_grad():
-            return score_sequences(reward_model, tokenized["input_ids"], tokenized["attention_mask"]).detach().cpu()
+            for start in range(0, len(pair_text), batch_size):
+                batch_text = pair_text[start : start + batch_size]
+                tokenized = reward_tokenizer(
+                    list(batch_text),
+                    padding=True,
+                    truncation=True,
+                    max_length=max_length,
+                    return_tensors="pt",
+                    add_special_tokens=False,
+                )
+                tokenized = {key: value.to(device) for key, value in tokenized.items()}
+                outputs.append(
+                    score_sequences(reward_model, tokenized["input_ids"], tokenized["attention_mask"]).detach().cpu()
+                )
+        if not outputs:
+            return torch.empty(0, dtype=torch.float32)
+        return torch.cat(outputs, dim=0)
 
     return score
 
