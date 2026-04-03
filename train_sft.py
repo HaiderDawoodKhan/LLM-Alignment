@@ -10,7 +10,7 @@ from model.policy import build_policy_model, build_policy_tokenizer
 from model.utils import count_parameters, gpu_memory_snapshot, save_artifact
 from runtime import RunLogger, StepTimer
 from seed import set_seed
-from train_helpers import build_hh_datasets, build_optimizer, build_sft_dataloader, default_device, preview_examples
+from train_helpers import build_optimizer, build_sft_dataloader, build_sft_datasets, default_device, preview_sft_examples
 
 
 def evaluate_sft(model, dataloader, device: torch.device) -> dict[str, float]:
@@ -52,12 +52,11 @@ def main() -> None:
     config = default_config(run_name="policy_sft")
     set_seed(config.runtime.seed)
     device = default_device(config)
-    datasets = build_hh_datasets(config)
-    for idx, example in enumerate(preview_examples(datasets, config.data.print_examples), start=1):
+    datasets = build_sft_datasets(config)
+    for idx, example in enumerate(preview_sft_examples(datasets, config.data.print_examples), start=1):
         print(f"[parsed-example-{idx}]")
         print("PROMPT:\n", example["prompt"])
-        print("CHOSEN:\n", example["chosen"])
-        print("REJECTED:\n", example["rejected"])
+        print("RESPONSE:\n", example["response"])
 
     tokenizer = build_policy_tokenizer(config.model)
     train_loader = build_sft_dataloader(datasets["sft_train"], tokenizer, config, shuffle=True)

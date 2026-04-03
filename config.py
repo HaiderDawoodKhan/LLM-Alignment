@@ -64,6 +64,10 @@ class RMConfig:
 
 @dataclass
 class SFTConfig:
+    dataset_name: str = "tatsu-lab/alpaca"
+    dataset_config: Optional[str] = None
+    train_split: str = "train"
+    eval_split_size: int = 512
     epochs: int = 1
     batch_size: int = 8
     grad_accum_steps: int = 4

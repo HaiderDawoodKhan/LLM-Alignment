@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification
 
 from config import AppConfig, OptimizerConfig
+from data.alpaca import load_alpaca_sft_datasets, preview_alpaca_examples
 from data.collators import DPOCollator, RMCollator, SFTCollator
 from data.hh_rlhf import build_preference_datasets, preview_parsed_examples
 from model.lora import has_lora_adapter, load_lora_adapter
@@ -32,8 +33,18 @@ def build_hh_datasets(config: AppConfig) -> dict[str, object]:
     return build_preference_datasets(config.data)
 
 
+def build_sft_datasets(config: AppConfig) -> dict[str, object]:
+    return load_alpaca_sft_datasets(config)
+
+
 def preview_examples(datasets: dict[str, object], n: int) -> List[dict]:
     return preview_parsed_examples(datasets["rm_train"], n=n)
+
+
+def preview_sft_examples(datasets: dict[str, object], n: int) -> List[dict]:
+    if "rm_train" in datasets:
+        return preview_parsed_examples(datasets["rm_train"], n=n)
+    return preview_alpaca_examples(datasets["sft_train"], n=n)
 
 
 def build_sft_dataloader(dataset, tokenizer, config: AppConfig, shuffle: bool) -> DataLoader:

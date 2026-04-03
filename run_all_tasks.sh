@@ -5,6 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 RUN_C0=1
+RUN_C1=1
+RUN_C2=1
+RUN_C3=1
+RUN_C4=1
+RUN_C5=1
+RUN_C6=1
 RUN_C7=1
 RUN_C8=1
 
@@ -12,6 +18,24 @@ for arg in "$@"; do
   case "$arg" in
     --skip-c0)
       RUN_C0=0
+      ;;
+    --skip-c1)
+      RUN_C1=0
+      ;;
+    --skip-c2)
+      RUN_C2=0
+      ;;
+    --skip-c3)
+      RUN_C3=0
+      ;;
+    --skip-c4)
+      RUN_C4=0
+      ;;
+    --skip-c5)
+      RUN_C5=0
+      ;;
+    --skip-c6)
+      RUN_C6=0
       ;;
     --skip-c7)
       RUN_C7=0
@@ -21,7 +45,7 @@ for arg in "$@"; do
       ;;
     *)
       echo "Unknown argument: $arg" >&2
-      echo "Usage: $0 [--skip-c0] [--skip-c7] [--skip-c8]" >&2
+      echo "Usage: $0 [--skip-c0] [--skip-c1] [--skip-c2] [--skip-c3] [--skip-c4] [--skip-c5] [--skip-c6] [--skip-c7] [--skip-c8]" >&2
       exit 1
       ;;
   esac
@@ -67,23 +91,35 @@ model_verification(config, device)
 PY
 fi
 
-run_step "Task C1: Reward model training" \
-  "$PYTHON_BIN" train_rm.py
+if [[ "$RUN_C1" -eq 1 ]]; then
+  run_step "Task C1: Reward model training" \
+    "$PYTHON_BIN" train_rm.py
+fi
 
-run_step "Task C2: SFT warm-up" \
-  "$PYTHON_BIN" train_sft.py
+if [[ "$RUN_C2" -eq 1 ]]; then
+  run_step "Task C2: SFT warm-up" \
+    "$PYTHON_BIN" train_sft.py
+fi
 
-run_step "Task C3: PPO training" \
-  "$PYTHON_BIN" train_rl.py --method ppo
+if [[ "$RUN_C3" -eq 1 ]]; then
+  run_step "Task C3: PPO training" \
+    "$PYTHON_BIN" train_rl.py --method ppo
+fi
 
-run_step "Task C4: DPO training" \
-  "$PYTHON_BIN" train_rl.py --method dpo
+if [[ "$RUN_C4" -eq 1 ]]; then
+  run_step "Task C4: DPO training" \
+    "$PYTHON_BIN" train_rl.py --method dpo
+fi
 
-run_step "Task C5: GRPO training" \
-  "$PYTHON_BIN" train_rl.py --method grpo
+if [[ "$RUN_C5" -eq 1 ]]; then
+  run_step "Task C5: GRPO training" \
+    "$PYTHON_BIN" train_rl.py --method grpo
+fi
 
-run_step "Task C6: RLVR training" \
-  "$PYTHON_BIN" train_rl.py --method rlvr
+if [[ "$RUN_C6" -eq 1 ]]; then
+  run_step "Task C6: RLVR training" \
+    "$PYTHON_BIN" train_rl.py --method rlvr
+fi
 
 if [[ "$RUN_C7" -eq 1 ]]; then
   run_step "Task C7: GRPO KL beta sweep" \
