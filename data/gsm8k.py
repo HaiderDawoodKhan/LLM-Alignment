@@ -75,10 +75,12 @@ def extract_answer(text: str) -> Optional[str]:
             return normalized
 
     if "####" in stripped:
-        candidate = stripped.split("####")[-1].strip().splitlines()[0]
-        normalized = normalize_numeric_string(candidate)
-        if normalized is not None:
-            return normalized
+        candidate_block = stripped.split("####")[-1].strip()
+        if candidate_block:
+            candidate_line = candidate_block.splitlines()[0].strip()
+            normalized = normalize_numeric_string(candidate_line)
+            if normalized is not None:
+                return normalized
 
     answer_lines = re.findall(r"(?:final answer|answer is)\s*[:\-]?\s*([^\n]+)", stripped, flags=re.I)
     for candidate in reversed(answer_lines):
