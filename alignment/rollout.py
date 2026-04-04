@@ -63,8 +63,9 @@ def extract_padded_response_ids(
 def gather_shifted_logprobs(logits: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
     shifted_logits = logits[:, :-1, :]
     shifted_labels = input_ids[:, 1:]
-    log_probs = torch.log_softmax(shifted_logits, dim=-1)
-    return log_probs.gather(dim=-1, index=shifted_labels.unsqueeze(-1)).squeeze(-1)
+    target_logits = shifted_logits.gather(dim=-1, index=shifted_labels.unsqueeze(-1)).squeeze(-1)
+    normalizer = torch.logsumexp(shifted_logits, dim=-1)
+    return target_logits - normalizer
 
 
 def forward_response_logprobs(

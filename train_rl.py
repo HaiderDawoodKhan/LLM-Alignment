@@ -129,6 +129,7 @@ def run_dpo(config: AppConfig, logger: RunLogger, device: torch.device) -> None:
             max_seq_len=config.data.max_seq_len,
             max_new_tokens=config.data.max_new_tokens,
             device=device,
+            eval_prompt_batch_size=config.dpo.eval_prompt_batch_size,
         )
 
     metrics = train_dpo_epoch(

@@ -104,6 +104,7 @@ class DPOConfig:
     beta: float = 0.1
     log_every: int = 10
     eval_every: int = 2500
+    eval_prompt_batch_size: int = 8
 
 
 @dataclass
@@ -144,6 +145,8 @@ class EvalConfig:
     sample_prompts: int = 5
     greedy_temperature: float = 0.0
     resource_log_window: int = 20
+    generation_batch_size: int = 8
+    kl_batch_size: int = 8
 
 
 @dataclass

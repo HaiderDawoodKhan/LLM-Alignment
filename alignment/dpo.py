@@ -34,12 +34,17 @@ def evaluate_dpo_policy(
     max_seq_len: int,
     max_new_tokens: int,
     device: torch.device,
+    eval_prompt_batch_size: int = 8,
 ) -> Dict[str, float]:
     policy.eval()
     reference.eval()
     reference_device = next(reference.parameters()).device
     preference_correct = 0.0
     preference_total = 0.0
+    eval_prompt_batch_size = max(1, int(eval_prompt_batch_size))
+    rm_scores_chunks: list[torch.Tensor] = []
+    kl_numerator = 0.0
+    kl_denominator = 0.0
     with torch.no_grad():
         for batch in eval_dataloader:
             chosen_input_ids = batch["chosen_input_ids"].to(device)
@@ -53,44 +58,44 @@ def evaluate_dpo_policy(
             preference_correct += float((chosen_logp > rejected_logp).float().sum().item())
             preference_total += float(chosen_logp.numel())
 
-        _, _, _, _, responses = generate_batch(
-            policy=policy,
-            tokenizer=tokenizer,
-            prompts=eval_prompts,
-            max_length=max_seq_len,
-            max_new_tokens=max_new_tokens,
-            temperature=0.0,
-            top_p=1.0,
-            do_sample=False,
-            device=device,
-        )
-        rm_scores = scorer(eval_prompts, responses)
-
-        prompt_input_ids, prompt_attention_mask, full_input_ids, full_attention_mask, _ = generate_batch(
-            policy=policy,
-            tokenizer=tokenizer,
-            prompts=eval_prompts,
-            max_length=max_seq_len,
-            max_new_tokens=max_new_tokens,
-            temperature=0.0,
-            top_p=1.0,
-            do_sample=False,
-            device=device,
-        )
-        response_starts = prompt_attention_mask.sum(dim=1) + (prompt_input_ids.size(1) - prompt_attention_mask.sum(dim=1))
-        policy_logprobs, response_mask = forward_response_logprobs(policy, full_input_ids, full_attention_mask, response_starts)
-        with disable_adapters_for_reference(reference):
-            ref_logprobs, _ = forward_response_logprobs(
-                reference,
-                full_input_ids.to(reference_device),
-                full_attention_mask.to(reference_device),
-                response_starts.to(reference_device),
+        for start in range(0, len(eval_prompts), eval_prompt_batch_size):
+            prompt_batch = eval_prompts[start : start + eval_prompt_batch_size]
+            prompt_input_ids, prompt_attention_mask, full_input_ids, full_attention_mask, responses = generate_batch(
+                policy=policy,
+                tokenizer=tokenizer,
+                prompts=prompt_batch,
+                max_length=max_seq_len,
+                max_new_tokens=max_new_tokens,
+                temperature=0.0,
+                top_p=1.0,
+                do_sample=False,
+                device=device,
             )
-        kl_value = sampled_token_kl(policy_logprobs, ref_logprobs.to(device), response_mask)
+            rm_scores_chunks.append(scorer(prompt_batch, responses).float().cpu())
+
+            response_starts = prompt_attention_mask.sum(dim=1) + (prompt_input_ids.size(1) - prompt_attention_mask.sum(dim=1))
+            policy_logprobs, response_mask = forward_response_logprobs(policy, full_input_ids, full_attention_mask, response_starts)
+            with disable_adapters_for_reference(reference):
+                ref_logprobs, _ = forward_response_logprobs(
+                    reference,
+                    full_input_ids.to(reference_device),
+                    full_attention_mask.to(reference_device),
+                    response_starts.to(reference_device),
+                )
+            delta = policy_logprobs - ref_logprobs.to(device)
+            mask_f = response_mask.to(delta.dtype)
+            kl_numerator += float((delta * mask_f).sum().item())
+            kl_denominator += float(mask_f.sum().item())
+
+        if rm_scores_chunks:
+            rm_scores = torch.cat(rm_scores_chunks, dim=0)
+        else:
+            rm_scores = torch.empty(0, dtype=torch.float32)
+        kl_value = kl_numerator / max(kl_denominator, 1.0)
 
     return {
-        "rm_score_mean": float(rm_scores.float().mean().item()),
-        "kl_to_reference": float(kl_value.item()),
+        "rm_score_mean": float(rm_scores.float().mean().item()) if rm_scores.numel() else 0.0,
+        "kl_to_reference": float(kl_value),
         "heldout_preference_accuracy": preference_correct / max(preference_total, 1.0),
     }
 

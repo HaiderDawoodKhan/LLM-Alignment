@@ -7,7 +7,6 @@ from typing import Dict, List, Sequence
 
 import torch
 
-from alignment.kl import sampled_token_kl
 from alignment.rollout import forward_response_logprobs, generate_batch
 from config import AppConfig, default_config
 from data.gsm8k import extract_answer, extract_gold_answer, format_gsm8k_prompt, load_gsm8k
@@ -66,45 +65,64 @@ def generate_responses(
     device: torch.device,
     max_new_tokens: int | None = None,
 ) -> List[str]:
+    responses: List[str] = []
+    generation_batch_size = max(1, int(config.evaluation.generation_batch_size))
     with torch.no_grad():
-        _, _, _, _, responses = generate_batch(
-            policy=policy,
-            tokenizer=tokenizer,
-            prompts=prompts,
-            max_length=config.data.max_seq_len,
-            max_new_tokens=max_new_tokens or config.data.max_new_tokens,
-            temperature=0.0,
-            top_p=1.0,
-            do_sample=False,
-            device=device,
-        )
+        for start in range(0, len(prompts), generation_batch_size):
+            prompt_batch = prompts[start : start + generation_batch_size]
+            _, _, _, _, batch_responses = generate_batch(
+                policy=policy,
+                tokenizer=tokenizer,
+                prompts=prompt_batch,
+                max_length=config.data.max_seq_len,
+                max_new_tokens=max_new_tokens or config.data.max_new_tokens,
+                temperature=0.0,
+                top_p=1.0,
+                do_sample=False,
+                device=device,
+            )
+            responses.extend(batch_responses)
     return responses
 
 
 def compute_kl_to_reference(policy, reference, tokenizer, prompts: Sequence[str], config: AppConfig, device: torch.device) -> float:
+    if len(prompts) == 0:
+        return 0.0
+
+    kl_batch_size = max(1, int(config.evaluation.kl_batch_size))
+    total_kl = 0.0
+    total_tokens = 0.0
+    reference_device = next(reference.parameters()).device
+
     with torch.no_grad():
-        prompt_input_ids, prompt_attention_mask, full_input_ids, full_attention_mask, _ = generate_batch(
-            policy=policy,
-            tokenizer=tokenizer,
-            prompts=prompts,
-            max_length=config.data.max_seq_len,
-            max_new_tokens=config.data.max_new_tokens,
-            temperature=0.0,
-            top_p=1.0,
-            do_sample=False,
-            device=device,
-        )
-        response_starts = prompt_attention_mask.sum(dim=1) + (prompt_input_ids.size(1) - prompt_attention_mask.sum(dim=1))
-        policy_logprobs, response_mask = forward_response_logprobs(policy, full_input_ids, full_attention_mask, response_starts)
-        reference_device = next(reference.parameters()).device
-        with disable_adapters_for_reference(reference):
-            ref_logprobs, _ = forward_response_logprobs(
-                reference,
-                full_input_ids.to(reference_device),
-                full_attention_mask.to(reference_device),
-                response_starts.to(reference_device),
+        for start in range(0, len(prompts), kl_batch_size):
+            prompt_batch = prompts[start : start + kl_batch_size]
+            prompt_input_ids, prompt_attention_mask, full_input_ids, full_attention_mask, _ = generate_batch(
+                policy=policy,
+                tokenizer=tokenizer,
+                prompts=prompt_batch,
+                max_length=config.data.max_seq_len,
+                max_new_tokens=config.data.max_new_tokens,
+                temperature=0.0,
+                top_p=1.0,
+                do_sample=False,
+                device=device,
             )
-        return float(sampled_token_kl(policy_logprobs, ref_logprobs.to(device), response_mask).item())
+            response_starts = prompt_attention_mask.sum(dim=1) + (prompt_input_ids.size(1) - prompt_attention_mask.sum(dim=1))
+            policy_logprobs, response_mask = forward_response_logprobs(policy, full_input_ids, full_attention_mask, response_starts)
+            with disable_adapters_for_reference(reference):
+                ref_logprobs, _ = forward_response_logprobs(
+                    reference,
+                    full_input_ids.to(reference_device),
+                    full_attention_mask.to(reference_device),
+                    response_starts.to(reference_device),
+                )
+
+            mask = response_mask.to(policy_logprobs.dtype)
+            total_kl += float(((policy_logprobs - ref_logprobs.to(device)) * mask).sum().item())
+            total_tokens += float(mask.sum().item())
+
+    return total_kl / max(total_tokens, 1.0)
 
 
 def rm_win_rate_vs_sft(
