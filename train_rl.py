@@ -5,7 +5,7 @@ import copy
 import json
 import random
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import torch
 
@@ -85,6 +85,75 @@ def mean_group_reward(rewards: torch.Tensor, group_ids: torch.Tensor | None) -> 
 
 def _sweep_suffix(value: float) -> str:
     return str(value).replace(".", "p").replace("-", "m")
+
+
+def _read_json_file(path: Path) -> Dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _collect_existing_grpo_sweep_results(base_config: AppConfig) -> Dict[str, Dict[str, Any]]:
+    results_by_run: Dict[str, Dict[str, Any]] = {}
+
+    summary_path = Path(base_config.runtime.logs_dir) / "grpo_beta_sweep" / "summary.json"
+    summary_payload = _read_json_file(summary_path)
+    if summary_payload is not None:
+        existing_runs = summary_payload.get("runs", [])
+        if isinstance(existing_runs, list):
+            for item in existing_runs:
+                if isinstance(item, dict):
+                    run_name = item.get("run_name")
+                    if isinstance(run_name, str) and run_name:
+                        results_by_run[run_name] = item
+
+    logs_root = Path(base_config.runtime.logs_dir)
+    for result_path in logs_root.glob("grpo_beta_*/grpo_beta_sweep_result.json"):
+        payload = _read_json_file(result_path)
+        if payload is None:
+            continue
+        run_name = payload.get("run_name")
+        if not isinstance(run_name, str) or not run_name:
+            run_name = result_path.parent.name
+            payload = {**payload, "run_name": run_name}
+        results_by_run[run_name] = payload
+
+    return results_by_run
+
+
+def _ordered_grpo_sweep_runs(
+    results_by_run: Dict[str, Dict[str, Any]],
+    configured_betas: List[float],
+) -> List[Dict[str, Any]]:
+    ordered_runs: List[Dict[str, Any]] = []
+    consumed_run_names: set[str] = set()
+    for beta in configured_betas:
+        run_name = f"grpo_beta_{_sweep_suffix(beta)}"
+        if run_name in results_by_run:
+            ordered_runs.append(results_by_run[run_name])
+            consumed_run_names.add(run_name)
+    for run_name in sorted(results_by_run.keys()):
+        if run_name in consumed_run_names:
+            continue
+        ordered_runs.append(results_by_run[run_name])
+    return ordered_runs
+
+
+def _write_grpo_sweep_summary(
+    base_config: AppConfig,
+    results_by_run: Dict[str, Dict[str, Any]],
+) -> None:
+    summary_dir = ensure_dir(Path(base_config.runtime.logs_dir) / "grpo_beta_sweep")
+    summary = {
+        "runs": _ordered_grpo_sweep_runs(results_by_run, base_config.ablations.ppo_grpo_beta),
+    }
+    with (summary_dir / "summary.json").open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, indent=2, sort_keys=True)
 
 
 def evaluate_reward_score_mean(
@@ -363,12 +432,23 @@ def run_grpo_like(
 
 
 def run_grpo_beta_sweep(base_config: AppConfig, device: torch.device) -> None:
-    summary = {"runs": []}
+    results_by_run = _collect_existing_grpo_sweep_results(base_config)
+    _write_grpo_sweep_summary(base_config, results_by_run)
     for beta in base_config.ablations.ppo_grpo_beta:
         cfg = copy.deepcopy(base_config)
         cfg.runtime.run_name = f"grpo_beta_{_sweep_suffix(beta)}"
         cfg.grpo.beta_kl = beta
         cfg.grpo.num_updates = 200
+        run_name = cfg.runtime.run_name
+        result_path = cfg.log_dir(run_name) / "grpo_beta_sweep_result.json"
+        if result_path.exists():
+            cached_result = _read_json_file(result_path)
+            if cached_result is not None:
+                cached_result["run_name"] = run_name
+                results_by_run[run_name] = cached_result
+                print(f"[grpo beta sweep] Skipping beta={beta} (found existing result at {result_path}).")
+                _write_grpo_sweep_summary(base_config, results_by_run)
+                continue
 
         logger = RunLogger(cfg.log_dir(cfg.runtime.run_name), cfg.to_dict())
         set_seed(cfg.runtime.seed)
@@ -413,11 +493,8 @@ def run_grpo_beta_sweep(base_config: AppConfig, device: torch.device) -> None:
         }
         logger.write_json("grpo_beta_sweep_result.json", result)
         logger.close()
-        summary["runs"].append(result)
-
-    summary_dir = ensure_dir(Path(base_config.runtime.logs_dir) / "grpo_beta_sweep")
-    with (summary_dir / "summary.json").open("w", encoding="utf-8") as handle:
-        json.dump(summary, handle, indent=2, sort_keys=True)
+        results_by_run[run_name] = result
+        _write_grpo_sweep_summary(base_config, results_by_run)
 
 
 def main() -> None:
